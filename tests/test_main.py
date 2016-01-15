@@ -2,6 +2,7 @@
 
 import aiohttp
 import asyncio
+import json
 import os
 import pytest
 import signal
@@ -37,16 +38,6 @@ def test_main_ctrl_c(capsys, event_loop):
         client.close()
         return body
 
-    @asyncio.coroutine
-    def fetch_ws(url):
-        client = aiohttp.ClientSession(loop=event_loop)
-        stream = yield from client.ws_connect(url)
-        body = yield from stream.receive()
-        body = body.data.strip()
-        yield from stream.close()
-        client.close()
-        return body
-
     def forward(target, source):
         try:
             target.set_result(source.result())
@@ -57,15 +48,9 @@ def test_main_ctrl_c(capsys, event_loop):
         t = event_loop.create_task(fetch_http('http://127.0.0.1:8080'))
         t.add_done_callback(partial(forward, f))
 
-    def hello_ws(f):
-        t = event_loop.create_task(fetch_ws('ws://127.0.0.1:8080'))
-        t.add_done_callback(partial(forward, f))
-
     # Automatically trigger CTRL-C after the test queries have run.
-    f1 = asyncio.Future()
-    f2 = asyncio.Future()
-    event_loop.call_later(0.5, hello_http, f1)
-    event_loop.call_later(0.5, hello_ws, f2)
+    f = asyncio.Future()
+    event_loop.call_later(0.5, hello_http, f)
     event_loop.call_later(0.6, os.kill, os.getpid(), signal.SIGINT)
 
     # Run the main function.
@@ -77,5 +62,4 @@ def test_main_ctrl_c(capsys, event_loop):
     assert stderr.strip() == ''
 
     # Body should match!
-    assert f1.result() == b'hello, world!'
-    assert f2.result() == 'hello, world!'
+    assert json.loads(f.result().decode('utf-8'))
