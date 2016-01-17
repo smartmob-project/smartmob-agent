@@ -45,5 +45,6 @@ setup(
     },
     install_requires=[
         'aiohttp>=0.20,<0.21',
+        'voluptuous>=0.8,<0.9',
     ],
 )
