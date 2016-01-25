@@ -2,11 +2,19 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
+import os
+import os.path
 import pkg_resources
+import procfile
 import sys
+import tarfile
+import venv
+import zipfile
 
-from aiohttp import web
+from aiohttp import ClientSession, web
+from strawboss import run_and_respawn
 from voluptuous import Schema, Required, MultipleInvalid
 
 version = pkg_resources.resource_string('smartmob_agent', 'version.txt')
@@ -29,6 +37,7 @@ ProcessDetails = Schema({
     Required('attach'): str,  # WebSocket here to stream logs.
     Required('details'): str,  # GET to query status.
     Required('delete'): str,  # POST here to delete.
+    Required('state'): str,  # enum.
 })
 
 Listing = Schema({
@@ -88,10 +97,181 @@ def make_details(request, process):
         'attach': attach_url,
         'details': details_url,
         'delete': delete_url,
+        'state': process['state'],
     }
+
+
+def unpack_archive(archive_format, archive_path, source_path):
+    """Extract a .zip/.tar.gz archive to a folder."""
+    if archive_format not in ('zip', 'tar'):
+        raise ValueError('Unknown archive format "%s".' % archive_format)
+    if archive_format == 'zip':
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(source_path)
+    if archive_format == 'tar':
+        with tarfile.open(archive_path) as archive:
+            archive.extractall(source_path)
+
+
+@contextlib.contextmanager
+def autoclose(x):
+    try:
+        yield
+    finally:
+        x.close()
+
+
+# TODO: stream by chunk to handle large archives.
+@asyncio.coroutine
+def download(client, url, path, reject=None):
+    if reject is None:
+        reject = lambda _1, _2: False
+
+    response = yield from client.get(url)
+    with autoclose(response):
+        if response.status != 200:
+            raise Exception('Download failed.')
+        if reject(url, response):
+            raise Exception('Download rejected.')
+        with open(path, 'wb') as archive:
+            content = yield from response.read()
+            archive.write(content)
+
+    return response.headers['Content-Type']
+
+
+@asyncio.coroutine
+def create_venv(path):
+    command = [
+        sys.executable, '-m', 'virtualenv', path,
+    ]
+    child = yield from asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    output, _ = yield from child.communicate()
+    status = yield from child.wait()
+    if status != 0:
+        raise Exception('command failed')
+
+
+@asyncio.coroutine
+def pip_install(venv_path, deps_path):
+    command = [
+        os.path.join(venv_path, 'bin', 'pip'),
+        'install', '-r', deps_path,
+    ]
+    child = yield from asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    output, _ = yield from child.communicate()
+    status = yield from child.wait()
+    if status != 0:
+        raise Exception('command failed')
+
+
+def negate(f):
+    def _(*args, **kwds):
+        return not f(*args, **kwds)
+    return _
+
+
+@asyncio.coroutine
+def start_process(app, process, loop=None):
+
+    loop = loop or asyncio.get_event_loop()
+
+    # Download source archive.
+    def is_archive(url, response):
+        return response.headers['Content-Type'] in (
+            'application/zip',
+            'application/x-gtar',
+        )
+
+    client = app['smartmob.http-client']
+    archive_path = os.path.join(
+        '.', '.smartmob', 'archives',
+        process['slug'],
+    )
+    process['state'] = 'downloading'
+    try:
+        content_type = yield from download(
+            client, process['source_url'],
+            archive_path,
+            reject=negate(is_archive),
+        )
+    except:
+        process['state'] = 'download failure'
+        raise
+    process['state'] = 'unpacking'
+
+    # Deduce archive format.
+    archive_format = {
+        'application/zip': 'zip',
+        'application/x-gtar': 'tar',
+    }[content_type]
+
+    # Unpack source archive.
+    source_path = os.path.join(
+        '.', '.smartmob', 'sources', process['slug'],
+    )
+    yield from loop.run_in_executor(
+        None, unpack_archive, archive_format, archive_path, source_path,
+    )
+    process['state'] = 'processing'
+
+    # Load Procfile and lookup process type.
+    try:
+        process_types = procfile.loadfile(
+            os.path.join(source_path, 'Procfile'),
+        )
+    except FileNotFoundError:
+        process['state'] = 'no procfile'
+        return
+    try:
+        process_type = process_types[process['process_type']]
+    except KeyError:
+        process['state'] = 'unknown process type'
+        return
+
+    # Create virtual environment.
+    venv_path = os.path.join(
+        '.', '.smartmob', 'envs', process['slug'],
+    )
+    try:
+        yield from create_venv(venv_path)
+    except:
+        process['state'] = 'virtual environment failure'
+        raise
+
+    # Install dependencies.
+    deps_path = os.path.join(source_path, 'requirements.txt')
+    try:
+        yield from pip_install(venv_path, deps_path)
+    except:
+        process['state'] = 'pip install failure'
+        raise
+
+    # Run it again and again until somebody requests to kill this process.
+    #
+    # TODO: figure out how to get status updates so REST API reflects actual
+    #       status.
+    yield from run_and_respawn(
+        name=process['slug'],
+        cmd=process_type['cmd'],
+        env=dict(process_type['env']),
+        shutdown=process['stop'],
+    )
 
 @asyncio.coroutine
 def create_process(request):
+    loop = asyncio.get_event_loop()
+
     # Validate request.
     r = yield from request.json()
     try:
@@ -106,6 +286,11 @@ def create_process(request):
     if slug in processes:
         raise web.HTTPConflict
     r['slug'] = slug
+    r['stop'] = asyncio.Future()
+    r['task'] = loop.create_task(
+        start_process(request.app, r, loop=loop),
+    )
+    r['state'] = 'pending'
     processes[slug] = r
     # Format response.
     process = make_details(request, r)
@@ -128,7 +313,6 @@ def process_status(request):
         process = processes[slug]
     except KeyError:
         raise web.HTTPNotFound
-    print('PROCESS:', process)
     # Format response.
     return web.Response(
         content_type='application/json',
@@ -146,7 +330,13 @@ def delete_process(request):
         process = processes[slug]
     except KeyError:
         raise web.HTTPNotFound
-    # Erase the process.
+    # Kill the process and wait for it to complete.
+    process['stop'].set_result(None)
+    try:
+        yield from process['task']
+    except Exception:  # TODO: be more accurate!
+        pass
+    # Erase bookkeeping.
     del processes[slug]
     # Format the response.
     return web.Response(
@@ -158,12 +348,32 @@ def delete_process(request):
 
 @asyncio.coroutine
 def attach_console(request):
+    # Must connect here with a WebSocket.
     if request.headers.get('Upgrade', '').lower() != 'websocket':
         pass
+
+    # Resolve the process.
+    processes = request.app.setdefault('smartmob.processes', {})
+    slug = request.match_info['slug']
+    try:
+        process = processes[slug]
+    except KeyError:
+        raise web.HTTPNotFound
+
+    # WebSocket handshake.
     stream = web.WebSocketResponse()
     yield from stream.prepare(request)
+
+    # TODO: retrieve data from the process and pipe it to the WebSocket.
+    #       Strawboss implementation doesn't provide anything for this at the
+    #       moment, so we'll have to do this later.
+
+    # Close the WebSocket.
     yield from stream.close()
+
+    # Required by the framework, but I don't know why.
     return stream
+
 
 @asyncio.coroutine
 def list_processes(request):
@@ -178,7 +388,7 @@ def list_processes(request):
     )
 
 @asyncio.coroutine
-def start_responder(endpoint=('127.0.0.1', 8080), loop=None):
+def start_responder(host='127.0.0.1', port=8080, loop=None):
     """."""
 
     loop = loop or asyncio.get_event_loop()
@@ -197,12 +407,45 @@ def start_responder(endpoint=('127.0.0.1', 8080), loop=None):
     app.router.add_route('GET', '/list-processes',
                          list_processes, name='list-processes')
 
+    # Create storage folders.
+    archives_path = os.path.join(
+        '.', '.smartmob', 'archives',
+    )
+    if not os.path.isdir(archives_path):
+        os.makedirs(archives_path)
+    sources_path = os.path.join(
+        '.', '.smartmob', 'sources',
+    )
+    if not os.path.isdir(sources_path):
+        os.makedirs(sources_path)
+    envs_path = os.path.join(
+        '.', '.smartmob', 'envs',
+    )
+    if not os.path.isdir(envs_path):
+        os.makedirs(envs_path)
+
     # Start accepting connections.
     handler = app.make_handler()
-    server = yield from loop.create_server(
-        handler, endpoint[0], endpoint[1]
-    )
+    server = yield from loop.create_server(handler, host, port)
     return app, handler, server
+
+
+@contextlib.contextmanager
+def responder(event_loop, host='127.0.0.1', port=8080):
+    app, handler, server = event_loop.run_until_complete(
+        start_responder(loop=event_loop, host=host, port=port)
+    )
+    client = ClientSession(loop=event_loop)
+    with autoclose(client):
+        app['smartmob.http-client'] = client
+        try:
+            yield 'http://127.0.0.1:8080', app, handler, server
+        finally:
+            server.close()
+            event_loop.run_until_complete(server.wait_closed())
+            event_loop.run_until_complete(handler.finish_connections(1.0))
+            event_loop.run_until_complete(app.finish())
+
 
 def main(arguments=None):
     """Command-line entry point.
@@ -223,16 +466,12 @@ def main(arguments=None):
     loop = asyncio.get_event_loop()
 
     # Run the agent :-)
-    app, handler, server = loop.run_until_complete(start_responder(loop=loop))
     try:
-        loop.run_forever()
+        with responder(loop) as (endpoint, app, handler, server):
+            loop.run_forever()  # pragma: no cover
     except KeyboardInterrupt:
         pass
-    finally:
-        server.close()
-        loop.run_until_complete(server.wait_closed())
-        loop.run_until_complete(handler.finish_connections(1.0))
-        loop.run_until_complete(app.finish())
+
 
 if __name__ == '__main__':  # pragma: no cover
     # Proceed as requested :-)

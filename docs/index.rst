@@ -58,8 +58,7 @@ Walk through
 
    loop = asyncio.get_event_loop()
    app, handler, server = loop.run_until_complete(start_responder(
-       endpoint=('127.0.0.1', '8080'),
-       loop=loop,
+       host='127.0.0.1', port=8080, loop=loop,
    ))
 
    import aiohttp
@@ -126,7 +125,8 @@ Next, you can start a process (see `Create request`_ in the API reference).
        "attach": "ws://127.0.0.1:8080/attach-console/myapp.web.0",
        "delete": "http://127.0.0.1:8080/delete-process/myapp.web.0",
        "details": "http://127.0.0.1:8080/process-status/myapp.web.0",
-       "slug": "myapp.web.0"
+       "slug": "myapp.web.0",
+       "state": "pending"
    }
 
 Once the process is created, it should appear in the listing (see `Listing`_ in
@@ -146,7 +146,8 @@ the API reference).
                "attach": "ws://127.0.0.1:8080/attach-console/myapp.web.0",
                "delete": "http://127.0.0.1:8080/delete-process/myapp.web.0",
                "details": "http://127.0.0.1:8080/process-status/myapp.web.0",
-               "slug": "myapp.web.0"
+               "slug": "myapp.web.0",
+               "state": "pending"
            }
        ]
    }
