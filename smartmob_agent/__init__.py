@@ -24,6 +24,10 @@ version = version.decode('utf-8').strip()
 cli = argparse.ArgumentParser(description="Run programs.")
 cli.add_argument('--version', action='version', version=version,
                  help="Print version and exit.")
+cli.add_argument('--host', action='store', dest='host',
+                 type=str, default='0.0.0.0')
+cli.add_argument('--port', action='store', dest='port',
+                 type=int, default=8080)
 
 Index = Schema({
     Required('list'): str,  # GET to query listing.
@@ -467,7 +471,7 @@ def main(arguments=None):
 
     # Run the agent :-)
     try:
-        with responder(loop) as (endpoint, app, handler, server):
+        with responder(loop, host=arguments.host, port=arguments.port):
             loop.run_forever()  # pragma: no cover
     except KeyboardInterrupt:
         pass
