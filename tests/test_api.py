@@ -9,6 +9,7 @@ import urllib.parse
 import zipfile
 
 from smartmob_agent import autoclose
+from unittest import mock
 
 
 @asyncio.coroutine
@@ -28,7 +29,7 @@ def post_json(client, url, payload):
 
 
 @pytest.mark.asyncio
-def test_full_flow(event_loop, server, client, file_server):
+def test_full_flow(event_loop, server, client, file_server, event_log):
     """Follows links in REST API."""
 
     # Create an application.
@@ -67,6 +68,12 @@ def test_full_flow(event_loop, server, client, file_server):
     assert process['slug']
     assert process['details'] == response.headers['Location']
     assert process.pop('state') == 'pending'
+    event_log.info.assert_has_calls([mock.call(
+        'process.create',
+        app='foo',
+        node='web.0',
+        slug='foo.web.0',
+    )])
 
     # Get the process details.
     response, process2 = yield from get_json(
@@ -95,6 +102,10 @@ def test_full_flow(event_loop, server, client, file_server):
     stream = yield from client.ws_connect(
         process['attach']
     )
+    event_log.info.assert_has_calls([mock.call(
+        'process.attach',
+        slug='foo.web.0',
+    )])
 
     # Detach console.
     yield from stream.close()
@@ -106,6 +117,10 @@ def test_full_flow(event_loop, server, client, file_server):
     )
     assert response.status == 200
     assert delete == {}
+    event_log.info.assert_has_calls([mock.call(
+        'process.delete',
+        slug='foo.web.0',
+    )])
 
 
 @pytest.mark.asyncio

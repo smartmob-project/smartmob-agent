@@ -6,10 +6,35 @@ import json
 import os
 import pytest
 import signal
+import structlog
+import testfixtures
 
 from functools import partial
-from smartmob_agent import main, version
+from freezegun import freeze_time
+from smartmob_agent import (
+    configure_logging,
+    main,
+    version,
+)
 from unittest import mock
+
+
+@pytest.mark.parametrize('log_format,expected', [
+    ('kv', "@timestamp='2016-05-08T21:19:00' event='teh.event' a=1 b=2"),
+    ('json', ('{"@timestamp": "2016-05-08T21:19:00"'
+              ', "a": 1, "b": 2, "event": "teh.event"}')),
+])
+def test_log_format(log_format, expected):
+    with freeze_time("2016-05-08 21:19:00"):
+        configure_logging(
+            log_format=log_format,
+            utc=False,
+        )
+        log = structlog.get_logger()
+        with testfixtures.OutputCapture() as capture:
+            log.info('teh.event', a=1, b=2)
+        capture.compare(expected)
+
 
 @mock.patch('sys.argv', ['smartmob-agent', '--version'])
 def test_main_sys_argv(capsys):
@@ -27,6 +52,7 @@ def test_main_explicit_args(capsys):
     assert stdout.strip() == version
 
 def test_main_ctrl_c(capsys, event_loop):
+
     # ...
     @asyncio.coroutine
     def fetch_http(url):
@@ -54,12 +80,22 @@ def test_main_ctrl_c(capsys, event_loop):
     event_loop.call_later(0.6, os.kill, os.getpid(), signal.SIGINT)
 
     # Run the main function.
-    main([])
+    event_log = mock.MagicMock()
+    with mock.patch('structlog.get_logger') as get_logger:
+        get_logger.return_value = event_log
+        main([])
 
     # Error log should be empty.
     stdout, stderr = capsys.readouterr()
-    assert stdout.strip() == ''
     assert stderr.strip() == ''
+    assert stdout.strip() == ''
+
+    # Structured event log should show the CTRL-C request.
+    event_log.info.assert_has_calls([
+        mock.call('bind', transport='tcp', host='0.0.0.0', port=8080),
+        mock.call('http.access', path='/', outcome=200, duration=mock.ANY),
+        mock.call('stop', reason='ctrl-c'),
+    ])
 
     # Body should match!
     assert json.loads(f.result().decode('utf-8'))

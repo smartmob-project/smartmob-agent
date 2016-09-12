@@ -8,8 +8,11 @@ import os
 import os.path
 import pkg_resources
 import procfile
+import structlog
+import structlog.processors
 import sys
 import tarfile
+import timeit
 import venv
 import zipfile
 
@@ -28,6 +31,70 @@ cli.add_argument('--host', action='store', dest='host',
                  type=str, default='0.0.0.0')
 cli.add_argument('--port', action='store', dest='port',
                  type=int, default=8080)
+cli.add_argument('--log-format', action='store', dest='log_format',
+                 type=str, choices={'kv', 'json'}, default='kv')
+cli.add_argument('--utc', action='store_true', dest='utc_timestamps',
+                 default=False)
+
+
+async def access_log_middleware(app, handler):
+    """Log each request in structured event log."""
+
+    event_log = app.get('smartmob.event_log') or structlog.get_logger()
+    clock = app.get('smartmob.clock') or timeit.default_timer
+
+    async def access_log(request):
+        ref = clock()
+        try:
+            response = await handler(request)
+            event_log.info(
+                'http.access',
+                path=request.path,
+                outcome=response.status,
+                duration=(clock()-ref),
+            )
+            return response
+        except web.HTTPException as error:
+            event_log.info(
+                'http.access',
+                path=request.path,
+                outcome=error.status,
+                duration=(clock()-ref),
+            )
+            raise
+        except Exception:
+            event_log.info(
+                'http.access',
+                path=request.path,
+                outcome=500,
+                duration=(clock()-ref),
+            )
+            raise
+
+    return access_log
+
+
+def configure_logging(log_format, utc):
+    processors = [
+        structlog.processors.TimeStamper(
+            fmt='iso',
+            key='@timestamp',
+            utc=utc,
+        ),
+    ]
+    if log_format == 'kv':
+        processors.append(structlog.processors.KeyValueRenderer(
+            sort_keys=True,
+            key_order=['@timestamp', 'event'],
+        ))
+    else:
+        processors.append(structlog.processors.JSONRenderer(
+            sort_keys=True,
+        ))
+    structlog.configure(
+        processors=processors,
+    )
+
 
 Index = Schema({
     Required('list'): str,  # GET to query listing.
@@ -275,6 +342,7 @@ def start_process(app, process, loop=None):
 @asyncio.coroutine
 def create_process(request):
     loop = asyncio.get_event_loop()
+    event_log = request.app.get('smartmob.event_log') or structlog.get_logger()
 
     # Validate request.
     r = yield from request.json()
@@ -282,13 +350,17 @@ def create_process(request):
         r = CreateRequest(r)
     except MultipleInvalid:
         raise web.HTTPBadRequest
+
     # Initiate process creation.
-    #
-    # TODO: something useful.
     processes = request.app.setdefault('smartmob.processes', {})
     slug = '.'.join((r['app'], r['node']))
     if slug in processes:
         raise web.HTTPConflict
+
+    # Log the request.
+    event_log.info('process.create', app=r['app'], node=r['node'], slug=slug)
+
+    # Proceed.
     r['slug'] = slug
     r['stop'] = asyncio.Future()
     r['task'] = loop.create_task(
@@ -296,6 +368,7 @@ def create_process(request):
     )
     r['state'] = 'pending'
     processes[slug] = r
+
     # Format response.
     process = make_details(request, r)
     return web.HTTPCreated(
@@ -310,6 +383,7 @@ def create_process(request):
 
 @asyncio.coroutine
 def process_status(request):
+
     # Lookup process.
     processes = request.app.setdefault('smartmob.processes', {})
     slug = request.match_info['slug']
@@ -317,6 +391,7 @@ def process_status(request):
         process = processes[slug]
     except KeyError:
         raise web.HTTPNotFound
+
     # Format response.
     return web.Response(
         content_type='application/json',
@@ -327,6 +402,9 @@ def process_status(request):
 
 @asyncio.coroutine
 def delete_process(request):
+
+    event_log = request.app.get('smartmob.event_log') or structlog.get_logger()
+
     # Resolve the process.
     processes = request.app.setdefault('smartmob.processes', {})
     slug = request.match_info['slug']
@@ -334,14 +412,20 @@ def delete_process(request):
         process = processes[slug]
     except KeyError:
         raise web.HTTPNotFound
+
+    # Log the request.
+    event_log.info('process.delete', slug=slug)
+
     # Kill the process and wait for it to complete.
     process['stop'].set_result(None)
     try:
         yield from process['task']
     except Exception:  # TODO: be more accurate!
         pass
+
     # Erase bookkeeping.
     del processes[slug]
+
     # Format the response.
     return web.Response(
         content_type='application/json',
@@ -352,6 +436,9 @@ def delete_process(request):
 
 @asyncio.coroutine
 def attach_console(request):
+
+    event_log = request.app.get('smartmob.event_log') or structlog.get_logger()
+
     # Must connect here with a WebSocket.
     if request.headers.get('Upgrade', '').lower() != 'websocket':
         pass
@@ -371,6 +458,9 @@ def attach_console(request):
     # TODO: retrieve data from the process and pipe it to the WebSocket.
     #       Strawboss implementation doesn't provide anything for this at the
     #       moment, so we'll have to do this later.
+
+    # Log the request.
+    event_log.info('process.attach', slug=slug)
 
     # Close the WebSocket.
     yield from stream.close()
@@ -392,13 +482,14 @@ def list_processes(request):
     )
 
 @asyncio.coroutine
-def start_responder(host='127.0.0.1', port=8080, loop=None):
+def start_responder(host='127.0.0.1', port=8080, event_log=None, loop=None):
     """."""
 
     loop = loop or asyncio.get_event_loop()
+    event_log = event_log or structlog.get_logger()
 
     # Prepare a web application.
-    app = web.Application(loop=loop)
+    app = web.Application(loop=loop, middlewares=[access_log_middleware])
     app.router.add_route('GET', '/', index)
     app.router.add_route('POST', '/create-process',
                          create_process, name='create-process')
@@ -428,6 +519,8 @@ def start_responder(host='127.0.0.1', port=8080, loop=None):
     if not os.path.isdir(envs_path):
         os.makedirs(envs_path)
 
+    event_log.info('bind', transport='tcp', host=host, port=port)
+
     # Start accepting connections.
     handler = app.make_handler()
     server = yield from loop.create_server(handler, host, port)
@@ -435,13 +528,17 @@ def start_responder(host='127.0.0.1', port=8080, loop=None):
 
 
 @contextlib.contextmanager
-def responder(event_loop, host='127.0.0.1', port=8080):
+def responder(event_loop, event_log=None, host='127.0.0.1', port=8080):
+    event_log = event_log or structlog.get_logger()
     app, handler, server = event_loop.run_until_complete(
-        start_responder(loop=event_loop, host=host, port=port)
+        start_responder(loop=event_loop, event_log=event_log,
+                        host=host, port=port)
     )
     client = ClientSession(loop=event_loop)
     with autoclose(client):
         app['smartmob.http-client'] = client
+        app['smartmob.event_log'] = event_log
+        app['smartmob.clock'] = timeit.default_timer
         try:
             yield 'http://127.0.0.1:8080', app, handler, server
         finally:
@@ -466,15 +563,24 @@ def main(arguments=None):
         arguments = sys.argv[1:]
     arguments = cli.parse_args(arguments)
 
+    # Initialize logger.
+    configure_logging(
+        log_format=arguments.log_format,
+        utc=arguments.utc_timestamps,
+    )
+    event_log = structlog.get_logger()
+
     # Start the event loop.
     loop = asyncio.get_event_loop()
 
     # Run the agent :-)
     try:
-        with responder(loop, host=arguments.host, port=arguments.port):
+        with responder(loop, event_log=event_log,
+                       host=arguments.host,
+                       port=arguments.port):
             loop.run_forever()  # pragma: no cover
     except KeyboardInterrupt:
-        pass
+        event_log.info('stop', reason='ctrl-c')
 
 
 if __name__ == '__main__':  # pragma: no cover
