@@ -5,5 +5,6 @@
 .smartmob/
 .tox/
 build/
-htmlcov/
+/coverage/
 *.egg-info/
+/dist/
