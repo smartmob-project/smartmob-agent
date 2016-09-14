@@ -51,9 +51,16 @@ Walk through
 .. testsetup::
 
    import asyncio
+   import structlog
+   from unittest import mock
 
    from smartmob_agent import (
        start_responder,
+   )
+
+   # Silence structured logging for doctests (keeps output more manageable).
+   structlog.configure(
+       logger_factory=structlog.PrintLoggerFactory(file=mock.MagicMock()),
    )
 
    loop = asyncio.get_event_loop()

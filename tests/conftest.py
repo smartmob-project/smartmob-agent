@@ -9,19 +9,27 @@ import os
 import os.path
 import pytest
 import shutil
+import structlog
 import random
 import tempfile
 import unittest.mock
 import urllib.parse
 
 from smartmob_agent import autoclose, responder
+from unittest import mock
 
 __here__ = os.path.dirname(os.path.abspath(__file__))
 
 
+@pytest.fixture(scope='function')
+def event_log():
+    return mock.MagicMock(autospec=structlog.get_logger())
+
+
 @pytest.yield_fixture
-def server(event_loop):
-    with responder(event_loop) as (endpoint, app, handler, server):
+def server(event_loop, event_log):
+    with responder(event_loop=event_loop,
+                   event_log=event_log) as (endpoint, app, handler, server):
         yield endpoint
 
 
