@@ -9,7 +9,11 @@ import pytest
 import testfixtures
 
 from aiohttp import web
-from smartmob_agent import access_log_middleware
+from smartmob_agent import (
+    access_log_middleware,
+    echo_request_id,
+    inject_request_id,
+)
 from unittest import mock
 
 
@@ -41,7 +45,7 @@ class HTTPServer:
 
 
 @pytest.mark.asyncio
-async def test_middleware_success_200(event_loop, unused_tcp_port):
+async def test_access_log_success_200(event_loop, unused_tcp_port):
     event_log = mock.MagicMock()
     clock = mock.MagicMock()
     clock.side_effect = [0.0, 1.0]
@@ -49,9 +53,11 @@ async def test_middleware_success_200(event_loop, unused_tcp_port):
     app = aiohttp.web.Application(
         loop=event_loop,
         middlewares=[
+            inject_request_id,
             access_log_middleware,
         ],
     )
+    app.on_response_prepare.append(echo_request_id)
     app['smartmob.event_log'] = event_log
     app['smartmob.clock'] = clock
 
@@ -68,6 +74,8 @@ async def test_middleware_success_200(event_loop, unused_tcp_port):
         async with aiohttp.ClientSession(loop=event_loop) as client:
             async with client.get(index_url) as rep:
                 assert rep.status == 200
+                request_id = rep.headers['x-request-id']
+                assert request_id
                 body = await rep.read()
                 assert body == b'...'
 
@@ -77,6 +85,7 @@ async def test_middleware_success_200(event_loop, unused_tcp_port):
         path='/',
         outcome=200,
         duration=1.0,
+        request=request_id,
     )
 
 
@@ -86,7 +95,7 @@ async def test_middleware_success_200(event_loop, unused_tcp_port):
     302,
 ])
 @pytest.mark.asyncio
-async def test_middleware_success_other(status, event_loop, unused_tcp_port):
+async def test_access_log_success_other(status, event_loop, unused_tcp_port):
     event_log = mock.MagicMock()
     clock = mock.MagicMock()
     clock.side_effect = [0.0, 1.0]
@@ -94,9 +103,11 @@ async def test_middleware_success_other(status, event_loop, unused_tcp_port):
     app = aiohttp.web.Application(
         loop=event_loop,
         middlewares=[
+            inject_request_id,
             access_log_middleware,
         ],
     )
+    app.on_response_prepare.append(echo_request_id)
     app['smartmob.event_log'] = event_log
     app['smartmob.clock'] = clock
 
@@ -113,6 +124,8 @@ async def test_middleware_success_other(status, event_loop, unused_tcp_port):
         async with aiohttp.ClientSession(loop=event_loop) as client:
             async with client.get(index_url, allow_redirects=False) as rep:
                 assert rep.status == status
+                request_id = rep.headers['x-request-id']
+                assert request_id
                 body = await rep.read()
                 assert body == b''
 
@@ -122,6 +135,7 @@ async def test_middleware_success_other(status, event_loop, unused_tcp_port):
         path='/',
         outcome=status,
         duration=1.0,
+        request=request_id,
     )
 
 
@@ -131,7 +145,7 @@ async def test_middleware_success_other(status, event_loop, unused_tcp_port):
     (web.HTTPConflict, 409),
 ])
 @pytest.mark.asyncio
-async def test_middleware_failure_http_exception(exc_class, expected_status,
+async def test_access_log_failure_http_exception(exc_class, expected_status,
                                                  event_loop, unused_tcp_port):
     event_log = mock.MagicMock()
     clock = mock.MagicMock()
@@ -140,9 +154,11 @@ async def test_middleware_failure_http_exception(exc_class, expected_status,
     app = aiohttp.web.Application(
         loop=event_loop,
         middlewares=[
+            inject_request_id,
             access_log_middleware,
         ],
     )
+    app.on_response_prepare.append(echo_request_id)
     app['smartmob.event_log'] = event_log
     app['smartmob.clock'] = clock
 
@@ -159,6 +175,8 @@ async def test_middleware_failure_http_exception(exc_class, expected_status,
         async with aiohttp.ClientSession(loop=event_loop) as client:
             async with client.get(index_url) as rep:
                 assert rep.status == expected_status
+                request_id = rep.headers['x-request-id']
+                assert request_id
                 body = await rep.read()
                 assert body == b'...'
 
@@ -168,6 +186,7 @@ async def test_middleware_failure_http_exception(exc_class, expected_status,
         path='/',
         outcome=expected_status,
         duration=1.0,
+        request=request_id,
     )
 
 
@@ -177,7 +196,7 @@ async def test_middleware_failure_http_exception(exc_class, expected_status,
     KeyError,
 ])
 @pytest.mark.asyncio
-async def test_middleware_failure_other_exception(exc_class, event_loop,
+async def test_access_log_failure_other_exception(exc_class, event_loop,
                                                   unused_tcp_port):
     event_log = mock.MagicMock()
     clock = mock.MagicMock()
@@ -186,9 +205,11 @@ async def test_middleware_failure_other_exception(exc_class, event_loop,
     app = aiohttp.web.Application(
         loop=event_loop,
         middlewares=[
+            inject_request_id,
             access_log_middleware,
         ],
     )
+    app.on_response_prepare.append(echo_request_id)
     app['smartmob.event_log'] = event_log
     app['smartmob.clock'] = clock
 
@@ -206,6 +227,8 @@ async def test_middleware_failure_other_exception(exc_class, event_loop,
             async with aiohttp.ClientSession(loop=event_loop) as client:
                 async with client.get(index_url) as rep:
                     assert rep.status == 500
+                    # request_id = rep.headers['x-request-id']
+                    # assert request_id
                     body = await rep.read()
                     assert body  # HTML content.
         capture.check(('aiohttp.web', 'ERROR', mock.ANY))
@@ -216,4 +239,100 @@ async def test_middleware_failure_other_exception(exc_class, event_loop,
         path='/',
         outcome=500,
         duration=1.0,
+        request=mock.ANY,  # aiohttp doesn't seem to execute our signal...
+    )
+
+
+@pytest.mark.asyncio
+async def test_access_log_custom_request_id(event_loop, unused_tcp_port):
+    event_log = mock.MagicMock()
+    clock = mock.MagicMock()
+    clock.side_effect = [0.0, 1.0]
+
+    request_id = 'My very own request ID!'
+
+    app = aiohttp.web.Application(
+        loop=event_loop,
+        middlewares=[
+            inject_request_id,
+            access_log_middleware,
+        ],
+    )
+    app.on_response_prepare.append(echo_request_id)
+    app['smartmob.event_log'] = event_log
+    app['smartmob.clock'] = clock
+
+    async def index(request):
+        return aiohttp.web.Response(body=b'...')
+
+    app.router.add_route('GET', '/', index)
+
+    # Given the server is running.
+    async with HTTPServer(app, '127.0.0.1', unused_tcp_port):
+
+        # When I access the index.
+        index_url = 'http://127.0.0.1:%d' % (unused_tcp_port,)
+        async with aiohttp.ClientSession(loop=event_loop) as client:
+            head = {
+                'X-Request-Id': request_id
+            }
+            async with client.get(index_url, headers=head) as rep:
+                assert rep.status == 200
+                assert rep.headers['x-request-id'] == request_id
+                body = await rep.read()
+                assert body == b'...'
+
+    # Then the request is logged in the access log.
+    event_log.info.assert_called_once_with(
+        'http.access',
+        path='/',
+        outcome=200,
+        duration=1.0,
+        request=request_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_access_log_no_signal(event_loop, unused_tcp_port):
+    """Middleware doesn't cause side-effects when misused."""
+    event_log = mock.MagicMock()
+    clock = mock.MagicMock()
+    clock.side_effect = [0.0, 1.0]
+
+    app = aiohttp.web.Application(
+        loop=event_loop,
+        middlewares=[
+            inject_request_id,
+            access_log_middleware,
+        ],
+    )
+    # Suppose someone forgot to register the signal handler.
+    # app.on_response_prepare.append(echo_request_id)
+    app['smartmob.event_log'] = event_log
+    app['smartmob.clock'] = clock
+
+    async def index(request):
+        return aiohttp.web.Response(body=b'...')
+
+    app.router.add_route('GET', '/', index)
+
+    # Given the server is running.
+    async with HTTPServer(app, '127.0.0.1', unused_tcp_port):
+
+        # When I access the index.
+        index_url = 'http://127.0.0.1:%d' % (unused_tcp_port,)
+        async with aiohttp.ClientSession(loop=event_loop) as client:
+            async with client.get(index_url) as rep:
+                assert rep.status == 200
+                assert 'x-request-id' not in rep.headers
+                body = await rep.read()
+                assert body == b'...'
+
+    # Then the request is logged in the access log.
+    event_log.info.assert_called_once_with(
+        'http.access',
+        path='/',
+        outcome=200,
+        duration=1.0,
+        request=mock.ANY,  # Not echoed in response, so value doesn't matter.
     )
