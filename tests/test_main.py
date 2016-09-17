@@ -95,7 +95,10 @@ def test_main_ctrl_c(capsys, event_loop):
     # Structured event log should show the CTRL-C request.
     event_log.info.assert_has_calls([
         mock.call('bind', transport='tcp', host='0.0.0.0', port=8080),
-        mock.call('http.access', path='/', outcome=200, duration=mock.ANY),
+        mock.call(
+            'http.access', path='/', outcome=200,
+            duration=mock.ANY, request=mock.ANY,
+        ),
         mock.call('stop', reason='ctrl-c'),
     ])
 

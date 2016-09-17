@@ -13,6 +13,7 @@ import structlog.processors
 import sys
 import tarfile
 import timeit
+import uuid
 import zipfile
 
 from aiohttp import ClientSession, web
@@ -36,6 +37,28 @@ cli.add_argument('--utc', action='store_true', dest='utc_timestamps',
                  default=False)
 
 
+async def inject_request_id(app, handler):
+    """aiohttp middleware: ensures each request has a unique request ID.
+
+    See: ``inject_request_id``.
+    """
+
+    async def trace_request(request):
+        request['x-request-id'] = \
+            request.headers.get('x-request-id') or str(uuid.uuid4())
+        return await handler(request)
+
+    return trace_request
+
+
+async def echo_request_id(request, response):
+    """aiohttp signal: ensures each response contains the request ID.
+
+    See: ``echo_request_id``.
+    """
+    response.headers['X-Request-Id'] = request.get('x-request-id', '?')
+
+
 async def access_log_middleware(app, handler):
     """Log each request in structured event log."""
 
@@ -51,6 +74,7 @@ async def access_log_middleware(app, handler):
                 path=request.path,
                 outcome=response.status,
                 duration=(clock()-ref),
+                request=request.get('x-request-id', '?'),
             )
             return response
         except web.HTTPException as error:
@@ -59,6 +83,7 @@ async def access_log_middleware(app, handler):
                 path=request.path,
                 outcome=error.status,
                 duration=(clock()-ref),
+                request=request.get('x-request-id', '?'),
             )
             raise
         except Exception:
@@ -67,6 +92,7 @@ async def access_log_middleware(app, handler):
                 path=request.path,
                 outcome=500,
                 duration=(clock()-ref),
+                request=request.get('x-request-id', '?'),
             )
             raise
 
