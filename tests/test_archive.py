@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 
 
-import io
 import os.path
 import pytest
 import tarfile
-import tempfile
 import zipfile
 
 from smartmob_agent import unpack_archive
@@ -23,6 +21,7 @@ def test_unpack_archive_unknown_format(mktemp, temp_folder):
         unpack_archive('tgz', archive_path, temp_folder)
     assert str(error.value) == 'Unknown archive format "tgz".'
 
+
 def test_unpack_archive_zip(mktemp, temp_folder):
     # Generate archive.
     archive_path = mktemp()
@@ -32,7 +31,7 @@ def test_unpack_archive_zip(mktemp, temp_folder):
 
     # Unpack it.
     unpack_archive('zip', archive_path, temp_folder)
-    
+
     # Check contents.
     with open(os.path.join(temp_folder, 'Procfile'), 'r') as stream:
         assert stream.read() == 'python-help: python --help'

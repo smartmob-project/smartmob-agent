@@ -32,7 +32,7 @@ def test_download_404(file_server, mktemp, client):
 def test_download_reject(file_server, mktemp, client):
     def check_ext(url, response):
         return not url.endswith('.zip')
-    
+
     file_server.provide('hello.txt', 'hello, world!')
     path = mktemp()
     with pytest.raises(Exception) as error:

@@ -44,7 +44,7 @@ setup(
          ],
     },
     install_requires=[
-        'aiohttp>=0.20,<0.21',
+        'aiohttp>=1,<2',
         'strawboss>=0.2,<0.3',
         'structlog>=16,<17',
         'virtualenv>=13.1,<14',

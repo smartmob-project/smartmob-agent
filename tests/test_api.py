@@ -454,7 +454,7 @@ def test_venv_failure(event_loop, server, client, file_server,
 
 @pytest.mark.asyncio
 def test_pip_failure(event_loop, server, client, file_server,
-                      subprocess_factory):
+                     subprocess_factory):
     """Demonstrates resilience to internal failure."""
 
     # Create an application.

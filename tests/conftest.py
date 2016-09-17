@@ -3,7 +3,6 @@
 import aiohttp
 import aiohttp.web
 import asyncio
-import contextlib
 import functools
 import os
 import os.path
@@ -88,6 +87,7 @@ def file_server(event_loop, temp_folder):
 def mktemp():
     """py.test fixture that generates a file name and erases it later."""
     files = []
+
     def _():
         path = tempfile.mktemp()
         files.append(path)

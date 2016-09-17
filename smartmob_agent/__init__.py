@@ -13,7 +13,6 @@ import structlog.processors
 import sys
 import tarfile
 import timeit
-import venv
 import zipfile
 
 from aiohttp import ClientSession, web
@@ -124,6 +123,7 @@ CreateRequest = Schema({
     'env': {str: str},
 })
 
+
 @asyncio.coroutine
 def index(request):
     list_url = '%s://%s%s' % (
@@ -144,6 +144,7 @@ def index(request):
         content_type='application/json',
         body=json.dumps(r).encode('utf-8'),
     )
+
 
 def make_details(request, process):
     slug = process['slug']
@@ -196,7 +197,7 @@ def autoclose(x):
 @asyncio.coroutine
 def download(client, url, path, reject=None):
     if reject is None:
-        reject = lambda _1, _2: False
+        reject = lambda _1, _2: False  # noqa: E731
 
     response = yield from client.get(url)
     with autoclose(response):
@@ -339,6 +340,7 @@ def start_process(app, process, loop=None):
         shutdown=process['stop'],
     )
 
+
 @asyncio.coroutine
 def create_process(request):
     loop = asyncio.get_event_loop()
@@ -381,6 +383,7 @@ def create_process(request):
         },
     )
 
+
 @asyncio.coroutine
 def process_status(request):
 
@@ -399,6 +402,7 @@ def process_status(request):
             make_details(request, process)
         )).encode('utf-8'),
     )
+
 
 @asyncio.coroutine
 def delete_process(request):
@@ -434,6 +438,7 @@ def delete_process(request):
         }).encode('utf-8'),
     )
 
+
 @asyncio.coroutine
 def attach_console(request):
 
@@ -446,9 +451,7 @@ def attach_console(request):
     # Resolve the process.
     processes = request.app.setdefault('smartmob.processes', {})
     slug = request.match_info['slug']
-    try:
-        process = processes[slug]
-    except KeyError:
+    if slug not in processes:
         raise web.HTTPNotFound
 
     # WebSocket handshake.
@@ -480,6 +483,7 @@ def list_processes(request):
             ],
         })).encode('utf-8'),
     )
+
 
 @asyncio.coroutine
 def start_responder(host='127.0.0.1', port=8080, event_log=None, loop=None):
