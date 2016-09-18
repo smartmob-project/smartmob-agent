@@ -591,7 +591,11 @@ def start_responder(host='127.0.0.1', port=8080, event_log=None, loop=None):
     event_log = event_log or structlog.get_logger()
 
     # Prepare a web application.
-    app = web.Application(loop=loop, middlewares=[access_log_middleware])
+    app = web.Application(loop=loop, middlewares=[
+        inject_request_id,
+        access_log_middleware,
+    ])
+    app.on_response_prepare.append(echo_request_id)
     app.router.add_route('GET', '/', index)
     app.router.add_route('POST', '/create-process',
                          create_process, name='create-process')
