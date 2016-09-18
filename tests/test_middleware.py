@@ -86,6 +86,7 @@ async def test_access_log_success_200(event_loop, unused_tcp_port):
         outcome=200,
         duration=1.0,
         request=request_id,
+        **{'@timestamp': mock.ANY}
     )
 
 
@@ -136,6 +137,7 @@ async def test_access_log_success_other(status, event_loop, unused_tcp_port):
         outcome=status,
         duration=1.0,
         request=request_id,
+        **{'@timestamp': mock.ANY}
     )
 
 
@@ -187,6 +189,7 @@ async def test_access_log_failure_http_exception(exc_class, expected_status,
         outcome=expected_status,
         duration=1.0,
         request=request_id,
+        **{'@timestamp': mock.ANY}
     )
 
 
@@ -240,6 +243,7 @@ async def test_access_log_failure_other_exception(exc_class, event_loop,
         outcome=500,
         duration=1.0,
         request=mock.ANY,  # aiohttp doesn't seem to execute our signal...
+        **{'@timestamp': mock.ANY}
     )
 
 
@@ -289,6 +293,7 @@ async def test_access_log_custom_request_id(event_loop, unused_tcp_port):
         outcome=200,
         duration=1.0,
         request=request_id,
+        **{'@timestamp': mock.ANY}
     )
 
 
@@ -335,4 +340,5 @@ async def test_access_log_no_signal(event_loop, unused_tcp_port):
         outcome=200,
         duration=1.0,
         request=mock.ANY,  # Not echoed in response, so value doesn't matter.
+        **{'@timestamp': mock.ANY}
     )
