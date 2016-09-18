@@ -45,6 +45,7 @@ setup(
     },
     install_requires=[
         'aiohttp>=1,<2',
+        'fluent-logger>=0.4,<0.5',
         'strawboss>=0.2,<0.3',
         'structlog>=16,<17',
         'virtualenv>=13.1,<14',

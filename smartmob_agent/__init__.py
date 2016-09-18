@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import contextlib
+import fluent.sender
 import json
 import os
 import os.path
@@ -18,6 +19,7 @@ import zipfile
 
 from aiohttp import ClientSession, web
 from strawboss import run_and_respawn
+from urllib.parse import urlsplit
 from voluptuous import Schema, Required, MultipleInvalid
 
 version = pkg_resources.resource_string('smartmob_agent', 'version.txt')
@@ -35,6 +37,8 @@ cli.add_argument('--log-format', action='store', dest='log_format',
                  type=str, choices={'kv', 'json'}, default='kv')
 cli.add_argument('--utc', action='store_true', dest='utc_timestamps',
                  default=False)
+cli.add_argument('--logging-endpoint', action='store', dest='logging_endpoint',
+                 default=None)
 
 
 async def inject_request_id(app, handler):
@@ -99,7 +103,60 @@ async def access_log_middleware(app, handler):
     return access_log
 
 
-def configure_logging(log_format, utc):
+class FluentLoggerFactory:
+    """For use with ``structlog.configure(logger_factory=...)``."""
+
+    @classmethod
+    def from_url(cls, url):
+        parts = urlsplit(url)
+        if parts.scheme != 'fluent':
+            raise ValueError('Invalid URL: "%s".' % url)
+        if parts.query or parts.fragment:
+            raise ValueError('Invalid URL: "%s".' % url)
+        netloc = parts.netloc.rsplit(':', 1)
+        if len(netloc) == 1:
+            host, port = netloc[0], 24224
+        else:
+            host, port = netloc
+            try:
+                port = int(port)
+            except ValueError:
+                raise ValueError('Invalid URL: "%s".' % url)
+        return FluentLoggerFactory(parts.path[1:], host, port)
+
+    def __init__(self, app, host, port):
+        self._app = app
+        self._host = host
+        self._port = port
+        self._sender = fluent.sender.FluentSender(app, host=host, port=port)
+
+    @property
+    def host(self):
+        return self._host
+
+    @property
+    def port(self):
+        return self._port
+
+    @property
+    def app(self):
+        return self._app
+
+    def __call__(self):
+        return FluentLogger(self._sender)
+
+
+class FluentLogger:
+    """Structlog logger that sends events to FluentD."""
+
+    def __init__(self, sender):
+        self._sender = sender
+
+    def info(self, event, **kwds):
+        self._sender.emit(event, kwds)
+
+
+def configure_logging(log_format, utc, endpoint):
     processors = [
         structlog.processors.TimeStamper(
             fmt='iso',
@@ -107,17 +164,32 @@ def configure_logging(log_format, utc):
             utc=utc,
         ),
     ]
-    if log_format == 'kv':
-        processors.append(structlog.processors.KeyValueRenderer(
-            sort_keys=True,
-            key_order=['@timestamp', 'event'],
-        ))
+    if endpoint.startswith('file://'):
+        path = endpoint[7:]
+        if path == '/dev/stdout':
+            stream = sys.stdout
+        elif path == '/dev/stderr':
+            stream = sys.stderr
+        else:
+            stream = open(path, 'w')
+        logger_factory = structlog.PrintLoggerFactory(file=stream)
+        if log_format == 'kv':
+            processors.append(structlog.processors.KeyValueRenderer(
+                sort_keys=True,
+                key_order=['@timestamp', 'event'],
+            ))
+        else:
+            processors.append(structlog.processors.JSONRenderer(
+                sort_keys=True,
+            ))
+    elif endpoint.startswith('fluent://'):
+        utc = True
+        logger_factory = FluentLoggerFactory.from_url(endpoint)
     else:
-        processors.append(structlog.processors.JSONRenderer(
-            sort_keys=True,
-        ))
+        raise ValueError('Invalid logging endpoint "%s".' % endpoint)
     structlog.configure(
         processors=processors,
+        logger_factory=logger_factory,
     )
 
 
@@ -593,10 +665,18 @@ def main(arguments=None):
         arguments = sys.argv[1:]
     arguments = cli.parse_args(arguments)
 
+    # Dynamic defaults.
+    logging_endpoint = arguments.logging_endpoint
+    if not logging_endpoint:
+        logging_endpoint = os.environ.get('SMARTMOB_LOGGING_ENDPOINT')
+    if not logging_endpoint:
+        logging_endpoint = 'file:///dev/stdout'
+
     # Initialize logger.
     configure_logging(
         log_format=arguments.log_format,
         utc=arguments.utc_timestamps,
+        endpoint=logging_endpoint,
     )
     event_log = structlog.get_logger()
 
