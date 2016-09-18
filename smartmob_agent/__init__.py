@@ -18,6 +18,7 @@ import uuid
 import zipfile
 
 from aiohttp import ClientSession, web
+from datetime import datetime, timezone
 from strawboss import run_and_respawn
 from urllib.parse import urlsplit
 from voluptuous import Schema, Required, MultipleInvalid
@@ -39,6 +40,34 @@ cli.add_argument('--utc', action='store_true', dest='utc_timestamps',
                  default=False)
 cli.add_argument('--logging-endpoint', action='store', dest='logging_endpoint',
                  default=None)
+
+
+class TimeStamper(object):
+    """Custom implementation of ``structlog.processors.TimeStamper``.
+
+    See:
+    - https://github.com/hynek/structlog/issues/81
+    """
+
+    def __init__(self, key, utc):
+        self._key = key
+        self._utc = utc
+        if utc:
+            def now():
+                return datetime.utcnow().replace(tzinfo=timezone.utc)
+        else:
+            def now():
+                return datetime.now()
+        self._now = now
+
+    def __call__(self, _, __, event_dict):
+        timestamp = event_dict.get('@timestamp')
+        if timestamp is None:
+            timestamp = self._now()
+        if isinstance(timestamp, datetime):
+            timestamp = timestamp.isoformat()
+        event_dict['@timestamp'] = timestamp
+        return event_dict
 
 
 async def inject_request_id(app, handler):
@@ -69,6 +98,10 @@ async def access_log_middleware(app, handler):
     event_log = app.get('smartmob.event_log') or structlog.get_logger()
     clock = app.get('smartmob.clock') or timeit.default_timer
 
+    # Keep the request arrival time to ensure we get intuitive logging of
+    # events.
+    arrival_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+
     async def access_log(request):
         ref = clock()
         try:
@@ -79,6 +112,7 @@ async def access_log_middleware(app, handler):
                 outcome=response.status,
                 duration=(clock()-ref),
                 request=request.get('x-request-id', '?'),
+                **{'@timestamp': arrival_time}
             )
             return response
         except web.HTTPException as error:
@@ -88,6 +122,7 @@ async def access_log_middleware(app, handler):
                 outcome=error.status,
                 duration=(clock()-ref),
                 request=request.get('x-request-id', '?'),
+                **{'@timestamp': arrival_time}
             )
             raise
         except Exception:
@@ -97,6 +132,7 @@ async def access_log_middleware(app, handler):
                 outcome=500,
                 duration=(clock()-ref),
                 request=request.get('x-request-id', '?'),
+                **{'@timestamp': arrival_time}
             )
             raise
 
@@ -158,8 +194,7 @@ class FluentLogger:
 
 def configure_logging(log_format, utc, endpoint):
     processors = [
-        structlog.processors.TimeStamper(
-            fmt='iso',
+        TimeStamper(
             key='@timestamp',
             utc=utc,
         ),

@@ -10,6 +10,7 @@ import structlog
 import testfixtures
 
 from contextlib import contextmanager
+from datetime import datetime
 from functools import partial
 from freezegun import freeze_time
 from itertools import chain
@@ -133,14 +134,16 @@ def test_fluent_url_parser_invalid_url(url):
         'Invalid URL: "%s".' % (url,)
 
 
-@pytest.mark.parametrize('logging_endpoint', [
-    'fluent://127.0.0.1:24224/the-app',
+@pytest.mark.parametrize('logging_endpoint,utc,expected_timestamp', [
+    ('fluent://127.0.0.1:24224/the-app', True, '2016-05-08T21:19:00+00:00'),
+    ('fluent://127.0.0.1:24224/the-app', False, '2016-05-08T21:19:00'),
 ])
 @mock.patch('fluent.sender.FluentSender.emit')
-def test_logging_fluentd(emit, logging_endpoint):
+def test_logging_fluentd(emit, logging_endpoint, utc, expected_timestamp):
     with freeze_time("2016-05-08 21:19:00"):
         configure_logging(
-            log_format='kv', utc=False,  # both ignored!
+            log_format='kv',  # Ignored!
+            utc=utc,
             endpoint=logging_endpoint,
         )
         log = structlog.get_logger()
@@ -150,7 +153,7 @@ def test_logging_fluentd(emit, logging_endpoint):
         emit.assert_called_once_with('teh.event', {
             'a': 1,
             'b': 2,
-            '@timestamp': '2016-05-08T21:19:00',
+            '@timestamp': expected_timestamp,
         })
 
 
@@ -216,6 +219,7 @@ def test_main_ctrl_c(capsys, event_loop):
         mock.call(
             'http.access', path='/', outcome=200,
             duration=mock.ANY, request=mock.ANY,
+            **{'@timestamp': mock.ANY}
         ),
         mock.call('stop', reason='ctrl-c'),
     ])
@@ -314,3 +318,27 @@ def test_main_fluent_logging_endpoint_env(capsys, event_loop, fluent_server):
 
     # Body should match!
     assert json.loads(f.result().decode('utf-8'))
+
+
+@pytest.mark.parametrize('timestamp,expected_timestamp', [
+    ('2016-05-08T21:19:00', '2016-05-08T21:19:00'),
+    (datetime(2016, 5, 8, 21, 19, 0), '2016-05-08T21:19:00'),
+])
+@mock.patch('fluent.sender.FluentSender.emit')
+def test_logging_fluentd_override_timestamp(emit, timestamp,
+                                            expected_timestamp):
+    with freeze_time("2016-05-08 21:19:00"):
+        configure_logging(
+            log_format='kv',  # Ignored!
+            utc=False,
+            endpoint='fluent://127.0.0.1:24224/the-app',
+        )
+        log = structlog.get_logger()
+        with testfixtures.OutputCapture() as capture:
+            log.info('teh.event', a=1, b=2, **{'@timestamp': timestamp})
+        capture.compare('')
+        emit.assert_called_once_with('teh.event', {
+            'a': 1,
+            'b': 2,
+            '@timestamp': expected_timestamp,
+        })
