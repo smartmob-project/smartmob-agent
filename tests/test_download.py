@@ -11,7 +11,7 @@ def test_download(file_server, mktemp, client):
     file_server.provide('hello.txt', 'hello, world!')
     path = mktemp()
     content_type = yield from download(
-        client, file_server.url('hello.txt'), path,
+        client, file_server.url('hello.txt'), path, request_id='?',
     )
     assert content_type == 'text/plain'
     with open(path, 'r') as stream:
@@ -23,7 +23,7 @@ def test_download_404(file_server, mktemp, client):
     path = mktemp()
     with pytest.raises(Exception) as error:
         yield from download(
-            client, file_server.url('hello.txt'), path,
+            client, file_server.url('hello.txt'), path, request_id='?',
         )
     assert str(error.value) == 'Download failed.'
 
@@ -38,5 +38,6 @@ def test_download_reject(file_server, mktemp, client):
     with pytest.raises(Exception) as error:
         yield from download(
             client, file_server.url('hello.txt'), path, reject=check_ext,
+            request_id='?',
         )
     assert str(error.value) == 'Download rejected.'

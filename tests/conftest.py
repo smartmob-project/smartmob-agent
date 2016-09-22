@@ -14,10 +14,18 @@ import structlog
 import random
 import tempfile
 import testfixtures
+import timeit
 import unittest.mock
 import urllib.parse
 
-from smartmob_agent import autoclose, responder, configure_logging
+from smartmob_agent import (
+    access_log_middleware,
+    autoclose,
+    configure_logging,
+    echo_request_id,
+    inject_request_id,
+    responder,
+)
 from unittest import mock
 
 __here__ = os.path.dirname(os.path.abspath(__file__))
@@ -68,13 +76,19 @@ class FileServer(object):
 
 
 @pytest.yield_fixture
-def file_server(event_loop, temp_folder):
+def file_server(event_loop, temp_folder, event_log):
     host = '127.0.0.1'
     port = 8081
-    app = aiohttp.web.Application(loop=event_loop)
+    app = aiohttp.web.Application(loop=event_loop, middlewares=[
+        inject_request_id,
+        access_log_middleware,
+    ])
+    app.on_response_prepare.append(echo_request_id)
     app.router.add_static(
         '/', temp_folder,
     )
+    app['smartmob.event_log'] = event_log
+    app['smartmob.clock'] = timeit.default_timer
     handler = app.make_handler()
     server = event_loop.run_until_complete(event_loop.create_server(
         handler, host, port,
