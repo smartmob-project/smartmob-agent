@@ -328,11 +328,14 @@ def autoclose(x):
 
 # TODO: stream by chunk to handle large archives.
 @asyncio.coroutine
-def download(client, url, path, reject=None):
+def download(client, url, path, request_id, reject=None):
     if reject is None:
         reject = lambda _1, _2: False  # noqa: E731
 
-    response = yield from client.get(url)
+    head = {
+        'X-Request-Id': request_id,
+    }
+    response = yield from client.get(url, headers=head)
     with autoclose(response):
         if response.status != 200:
             raise Exception('Download failed.')
@@ -387,7 +390,7 @@ def negate(f):
 
 
 @asyncio.coroutine
-def start_process(app, process, loop=None):
+def start_process(app, process, request_id, loop=None):
 
     loop = loop or asyncio.get_event_loop()
 
@@ -408,6 +411,7 @@ def start_process(app, process, loop=None):
         content_type = yield from download(
             client, process['source_url'],
             archive_path,
+            request_id=request_id,
             reject=negate(is_archive),
         )
     except:
@@ -498,9 +502,10 @@ def create_process(request):
     # Proceed.
     r['slug'] = slug
     r['stop'] = asyncio.Future()
-    r['task'] = loop.create_task(
-        start_process(request.app, r, loop=loop),
-    )
+    r['task'] = loop.create_task(start_process(
+        request.app, r, loop=loop,
+        request_id=request['x-request-id'],
+    ))
     r['state'] = 'pending'
     processes[slug] = r
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import pytest
 import urllib.parse
+import uuid
 import zipfile
 
 from smartmob_agent import autoclose
@@ -21,8 +22,10 @@ def get_json(client, url):
 
 
 @asyncio.coroutine
-def post_json(client, url, payload):
-    response = yield from client.post(url, data=json.dumps(payload))
+def post_json(client, url, payload, headers={}):
+    response = yield from client.post(
+        url, data=json.dumps(payload), headers=headers
+    )
     with autoclose(response):
         body = yield from response.read()
         return response, json.loads(body.decode('utf-8'))
@@ -55,12 +58,16 @@ def test_full_flow(event_loop, server, client, file_server, event_log):
     }
 
     # Create a new process.
+    create_request_id = str(uuid.uuid4())
     response, process = yield from post_json(
         client, index['create'], {
             'app': 'foo',
             'node': 'web.0',
             'source_url': file_server.url('stuff.zip'),
             'process_type': 'web',
+        },
+        headers={
+            'X-Request-Id': create_request_id,
         },
     )
     assert response.status == 201
@@ -120,6 +127,16 @@ def test_full_flow(event_loop, server, client, file_server, event_log):
     event_log.info.assert_has_calls([mock.call(
         'process.delete',
         slug='foo.web.0',
+    )])
+
+    # Archive download should have been logged too.
+    event_log.info.assert_has_calls([mock.call(
+        'http.access',
+        path='/stuff.zip',
+        outcome=200,
+        request=create_request_id,
+        duration=mock.ANY,
+        **{'@timestamp': mock.ANY},
     )])
 
 
